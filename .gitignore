@@ -1,0 +1,36 @@
+# n8n local data
+.n8n/
+*.credentials.json
+
+# n8n exports that might contain credential leakage
+*-credentials.json
+*-with-credentials.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+
+# Audio test outputs (don't commit your generated MP3s)
+*.mp3
+*.m4a
+*.wav
+
+# Logs
+*.log
+npm-debug.log*

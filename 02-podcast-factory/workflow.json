@@ -1,0 +1,273 @@
+{
+  "name": "AI Podcast / Audio Newsletter Factory",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 6 * * *" }
+          ]
+        }
+      },
+      "id": "b2c3d4e5-0001-4000-8000-000000000001",
+      "name": "Daily 6am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "sources",
+              "value": "[\"https://hnrss.org/frontpage?points=200\",\"https://techcrunch.com/feed/\",\"https://www.theverge.com/rss/index.xml\"]"
+            },
+            {
+              "name": "topic_filter",
+              "value": "ai, llm, agent, automation, voice, anthropic, openai, robotics"
+            }
+          ],
+          "number": [
+            { "name": "max_stories", "value": 3 }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2c3d4e5-0002-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fan out the configured RSS feed URLs into individual items so the next RSS node can iterate.\nconst sources = JSON.parse($json.sources);\nreturn sources.map(url => ({ json: { url, topic_filter: $json.topic_filter, max_stories: $json.max_stories } }));"
+      },
+      "id": "b2c3d4e5-0003-4000-8000-000000000003",
+      "name": "Fan Out Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "ignoreSSL": false,
+          "headers": { "user-agent": "n8n-podcast-bot/1.0" }
+        }
+      },
+      "id": "b2c3d4e5-0004-4000-8000-000000000004",
+      "name": "Read RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [800, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Score and rank stories across all feeds.\n// Keyword overlap with topic_filter + recency boost (last 24h).\n\nconst all = $input.all();\nconst cfg = $('Config').first().json;\nconst keywords = cfg.topic_filter.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);\nconst dayMs = 24 * 60 * 60 * 1000;\nconst now = Date.now();\n\nconst scored = all.map(item => {\n  const j = item.json;\n  const text = `${j.title || ''} ${j.contentSnippet || j.content || ''}`.toLowerCase();\n  const keyword_hits = keywords.filter(k => text.includes(k)).length;\n  const pub = j.isoDate || j.pubDate ? new Date(j.isoDate || j.pubDate).getTime() : now;\n  const age_hours = Math.max(0, (now - pub) / (60 * 60 * 1000));\n  const recency_score = age_hours < 24 ? 2 : age_hours < 72 ? 1 : 0;\n  return {\n    json: {\n      title: j.title,\n      link: j.link,\n      summary: (j.contentSnippet || j.content || '').slice(0, 800),\n      pub_date: j.isoDate || j.pubDate,\n      score: keyword_hits * 3 + recency_score\n    }\n  };\n});\n\n// Dedupe by title and take the top N.\nconst seen = new Set();\nconst ranked = scored\n  .filter(i => i.json.score > 0)\n  .sort((a, b) => b.json.score - a.json.score)\n  .filter(i => { if (seen.has(i.json.title)) return false; seen.add(i.json.title); return true; })\n  .slice(0, cfg.max_stories);\n\nif (!ranked.length) {\n  throw new Error('No qualifying stories matched the topic filter today.');\n}\n\nreturn ranked;"
+      },
+      "id": "b2c3d4e5-0005-4000-8000-000000000005",
+      "name": "Rank Top Stories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collapse all top stories into a single item with a stories array for one LLM call.\n// One call beats N calls for coherent multi-story scripts (the hosts can reference earlier stories).\nconst stories = $input.all().map((i, idx) => ({\n  rank: idx + 1,\n  title: i.json.title,\n  link: i.json.link,\n  summary: i.json.summary\n}));\n\nreturn [{ json: { stories, story_count: stories.length, generated_for: new Date().toISOString().slice(0, 10) } }];"
+      },
+      "id": "b2c3d4e5-0006-4000-8000-000000000006",
+      "name": "Bundle Stories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 3000,\n  \"temperature\": 0.8,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"You write daily AI/tech podcast scripts for a two-host show called 'Signal Boost'. Host ALEX is curious, asks the naive question, slightly skeptical. Host JORDAN is the deep-end expert, dryly funny, gives the analyst take.\\n\\nReturn a JSON object: { \\\"turns\\\": [ { \\\"speaker\\\": \\\"alex\\\"|\\\"jordan\\\", \\\"text\\\": \\\"...\\\" }, ... ] }.\\n\\nThe first turn is always Alex doing a 15-20 word cold open with today's date and a teaser. The last turn is always Jordan with a one-line sign-off. For each story: alex sets up (1 turn), jordan analyzes (1-2 turns), alex follow-up question (1 turn), jordan answers (1 turn). 9-14 turns per story. Total target: 600-900 words across all stories. Conversational, no lists, no asterisks, no markdown. Use natural verbal cues like 'so', 'right', 'wait, but'.\" },\n    { \"role\": \"user\", \"content\": {{ JSON.stringify('Today is ' + $json.generated_for + '. Here are today\\'s ' + $json.story_count + ' stories, ranked by relevance:\\n\\n' + $json.stories.map(s => `STORY ${s.rank}: ${s.title}\\n${s.summary}\\nLink: ${s.link}`).join('\\n\\n') + '\\n\\nWrite the podcast script.') }} }\n  ]\n}",
+        "options": {
+          "timeout": 60000,
+          "retry": { "retry": { "maxTries": 2, "waitBetweenTries": 3000 } }
+        }
+      },
+      "id": "b2c3d4e5-0007-4000-8000-000000000007",
+      "name": "OpenAI: Generate Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 400],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME", "name": "OpenAI account" }
+      },
+      "notes": "Uses response_format: json_object (OpenAI's JSON mode) — guarantees valid JSON without prose prefix/suffix."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse OpenAI's JSON-mode response. response_format guarantees parseable JSON in choices[0].message.content.\nconst response = $input.first().json;\nconst raw = response.choices?.[0]?.message?.content || '';\n\nlet parsed;\ntry { parsed = JSON.parse(raw); }\ncatch (e) { throw new Error('Failed to parse JSON-mode output: ' + e.message + '. Got: ' + raw.slice(0, 300)); }\n\nconst turns = parsed.turns;\nif (!Array.isArray(turns) || !turns.length) throw new Error('Turns array missing or empty in response.');\n\n// Validate every turn before we send anything to ElevenLabs.\nconst valid_speakers = new Set(['alex', 'jordan']);\nturns.forEach((t, i) => {\n  if (!valid_speakers.has(t.speaker)) throw new Error(`Turn ${i}: invalid speaker '${t.speaker}'`);\n  if (!t.text || t.text.length < 5) throw new Error(`Turn ${i}: text too short or missing`);\n  if (t.text.length > 800) throw new Error(`Turn ${i}: text too long (${t.text.length} chars)`);\n});\n\n// Emit each turn as a separate item so the next node can synthesize them in sequence.\nreturn turns.map((t, idx) => ({\n  json: {\n    turn_index: idx,\n    total_turns: turns.length,\n    speaker: t.speaker,\n    text: t.text,\n    is_first: idx === 0,\n    is_last: idx === turns.length - 1\n  }\n}));"
+      },
+      "id": "b2c3d4e5-0008-4000-8000-000000000008",
+      "name": "Parse + Validate Turns",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Per-persona voice settings — this is the heart of the multi-voice tuning showcase.\n// Alex (curious, energetic) and Jordan (dry expert) need different ElevenLabs params.\n\nconst PERSONAS = {\n  alex: {\n    voice_id: 's3TPKV1kjDlVtZbl4Ksh',   // TODO: swap to a brighter younger voice for true multi-voice demo\n    settings: {\n      stability: 0.35,           // more variation → curious energy\n      similarity_boost: 0.80,\n      style: 0.45,               // higher style → expressive 'wait, what?' moments\n      use_speaker_boost: true\n    }\n  },\n  jordan: {\n    voice_id: 's3TPKV1kjDlVtZbl4Ksh', // TODO: swap to a lower measured voice for true multi-voice demo\n    settings: {\n      stability: 0.65,           // steadier → analyst credibility\n      similarity_boost: 0.85,\n      style: 0.15,               // low style → dry, deadpan delivery\n      use_speaker_boost: true\n    }\n  }\n};\n\nconst t = $json;\nconst persona = PERSONAS[t.speaker];\nif (!persona) throw new Error(`No persona config for speaker: ${t.speaker}`);\n\nreturn [{\n  json: {\n    ...t,\n    voice_id: persona.voice_id,\n    voice_settings: persona.settings\n  }\n}];"
+      },
+      "id": "b2c3d4e5-0009-4000-8000-000000000009",
+      "name": "Apply Persona Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.elevenlabs.io/v1/text-to-speech/{{ $json.voice_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "accept", "value": "audio/mpeg" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"model_id\": \"eleven_turbo_v2_5\",\n  \"voice_settings\": {{ JSON.stringify($json.voice_settings) }}\n}",
+        "options": {
+          "timeout": 60000,
+          "response": { "response": { "responseFormat": "file" } },
+          "retry": { "retry": { "maxTries": 3, "waitBetweenTries": 4000 } },
+          "batching": { "batch": { "batchSize": 2, "batchInterval": 1000 } }
+        }
+      },
+      "id": "b2c3d4e5-0010-4000-8000-000000000010",
+      "name": "ElevenLabs: Synthesize Turn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 400],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_ME", "name": "ElevenLabs xi-api-key" }
+      },
+      "notes": "Batched 2-at-a-time to stay under ElevenLabs concurrency limits on the Creator tier (≤ 2 parallel)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Each item now has the synthesized binary audio. Collect ALL items into a single ordered list\n// for the merge step. Tag each binary with its turn_index so order is preserved through downstream nodes.\n\nconst items = $input.all();\n// Sort by turn_index (defensive — n8n usually preserves order with batching, but binary fan-in can scramble).\nitems.sort((a, b) => a.json.turn_index - b.json.turn_index);\n\nreturn items.map((it, idx) => ({\n  json: { turn_index: it.json.turn_index, speaker: it.json.speaker, text: it.json.text },\n  binary: { [`audio_${String(idx).padStart(3, '0')}`]: it.binary.data }\n}));"
+      },
+      "id": "b2c3d4e5-0011-4000-8000-000000000011",
+      "name": "Order Audio Segments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Concatenate MP3 binary segments using Buffer.concat — works on n8n Cloud (no Execute Command, no native imports).\n// Safe because every ElevenLabs response shares codec (MP3) + sample rate (44.1kHz) + channels (mono).\n// MP3 is a stream of self-contained frames so naive byte concatenation produces a valid file every player handles.\n// This is byte-identical to ffmpeg's `-c copy` stream-copy concat — same output, no native binary needed.\n\nconst items = $input.all();\n// Defensive: sort by turn_index in case binary fan-in scrambled order.\nitems.sort((a, b) => (a.json.turn_index ?? 0) - (b.json.turn_index ?? 0));\n\nconst buffers = [];\nfor (let i = 0; i < items.length; i++) {\n  const binKey = Object.keys(items[i].binary || {})[0];\n  if (!binKey) throw new Error(`Item ${i} has no binary segment`);\n  const buf = await this.helpers.getBinaryDataBuffer(i, binKey);\n  buffers.push(buf);\n}\n\nconst combined = Buffer.concat(buffers);\nconst episode_date = new Date().toISOString().slice(0, 10);\nconst transcript = items.map(it => `${it.json.speaker.toUpperCase()}: ${it.json.text}`).join('\\n\\n');\nconst total_chars = items.reduce((s, it) => s + it.json.text.length, 0);\n\nreturn [{\n  json: {\n    episode_date,\n    turn_count: items.length,\n    total_chars,\n    transcript,\n    estimated_seconds: Math.round(total_chars / 15),\n    bytes: combined.length\n  },\n  binary: {\n    episode: await this.helpers.prepareBinaryData(combined, `signal-boost-${episode_date}.mp3`, 'audio/mpeg')\n  }\n}];"
+      },
+      "id": "b2c3d4e5-0012-4000-8000-000000000012",
+      "name": "Stitch Audio (Buffer.concat)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 400],
+      "notes": "Cloud-safe stitching. Uses Buffer.concat on raw MP3 bytes — equivalent to ffmpeg's stream-copy concat for same-codec/sample-rate inputs (which ElevenLabs always returns). No Execute Command, no filesystem access, no Node built-in imports."
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "={{ $env.S3_BUCKET }}",
+        "fileName": "=podcast/signal-boost-{{ $json.episode_date }}.mp3",
+        "binaryPropertyName": "episode",
+        "additionalFields": {
+          "acl": "public-read",
+          "contentType": "audio/mpeg",
+          "tagsUi": { "tagsValues": [{ "key": "show", "value": "signal-boost" }] }
+        }
+      },
+      "id": "b2c3d4e5-0013-4000-8000-000000000013",
+      "name": "Upload Episode to S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [3520, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a podcast-style RSS item entry and a Slack-friendly summary.\nconst meta = $('Stitch Audio (Buffer.concat)').first().json;\nconst s3 = $input.first().json;\nconst audio_url = s3.Location || `https://${$env.S3_BUCKET}.s3.amazonaws.com/${s3.Key}`;\n\nconst rss_item = `<item>\n  <title>Signal Boost — ${meta.episode_date}</title>\n  <description><![CDATA[${meta.transcript.slice(0, 500)}...]]></description>\n  <pubDate>${new Date().toUTCString()}</pubDate>\n  <enclosure url=\"${audio_url}\" length=\"0\" type=\"audio/mpeg\"/>\n  <itunes:duration>${meta.estimated_seconds}</itunes:duration>\n  <guid isPermaLink=\"false\">signal-boost-${meta.episode_date}</guid>\n</item>`;\n\nreturn [{\n  json: {\n    episode_date: meta.episode_date,\n    audio_url,\n    transcript: meta.transcript,\n    duration_seconds: meta.estimated_seconds,\n    turn_count: meta.turn_count,\n    total_chars: meta.total_chars,\n    rss_item\n  }\n}];"
+      },
+      "id": "b2c3d4e5-0014-4000-8000-000000000014",
+      "name": "Build Episode Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3680, 400]
+    },
+    {
+      "parameters": {
+        "channel": "#podcast",
+        "text": "=:studio_microphone: *Signal Boost — {{ $json.episode_date }}* is live!\n\n:headphones: <{{ $json.audio_url }}|Listen ({{ Math.round($json.duration_seconds / 60) }} min)>\n:scroll: {{ $json.turn_count }} turns • {{ $json.total_chars }} chars synthesized\n\n_Transcript preview:_\n```\n{{ $json.transcript.slice(0, 400) }}...\n```",
+        "otherOptions": { "mrkdwn": true }
+      },
+      "id": "b2c3d4e5-0015-4000-8000-000000000015",
+      "name": "Slack: Announce Episode",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3840, 400]
+    },
+    {
+      "parameters": {},
+      "id": "b2c3d4e5-0016-4000-8000-000000000016",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 700]
+    },
+    {
+      "parameters": {
+        "channel": "#automation-alerts",
+        "text": "=:rotating_light: *Podcast factory failed*\n*Step:* {{ $json.execution.lastNodeExecuted }}\n*Error:* {{ $json.execution.error.message }}\n*Execution:* <{{ $json.execution.url }}|Open>",
+        "otherOptions": { "mrkdwn": true }
+      },
+      "id": "b2c3d4e5-0017-4000-8000-000000000017",
+      "name": "Slack: Alert on Failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [400, 700]
+    }
+  ],
+  "connections": {
+    "Daily 6am Trigger": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Fan Out Sources", "type": "main", "index": 0 }]] },
+    "Fan Out Sources": { "main": [[{ "node": "Read RSS", "type": "main", "index": 0 }]] },
+    "Read RSS": { "main": [[{ "node": "Rank Top Stories", "type": "main", "index": 0 }]] },
+    "Rank Top Stories": { "main": [[{ "node": "Bundle Stories", "type": "main", "index": 0 }]] },
+    "Bundle Stories": { "main": [[{ "node": "OpenAI: Generate Script", "type": "main", "index": 0 }]] },
+    "OpenAI: Generate Script": { "main": [[{ "node": "Parse + Validate Turns", "type": "main", "index": 0 }]] },
+    "Parse + Validate Turns": { "main": [[{ "node": "Apply Persona Settings", "type": "main", "index": 0 }]] },
+    "Apply Persona Settings": { "main": [[{ "node": "ElevenLabs: Synthesize Turn", "type": "main", "index": 0 }]] },
+    "ElevenLabs: Synthesize Turn": { "main": [[{ "node": "Order Audio Segments", "type": "main", "index": 0 }]] },
+    "Order Audio Segments": { "main": [[{ "node": "Stitch Audio (Buffer.concat)", "type": "main", "index": 0 }]] },
+    "Stitch Audio (Buffer.concat)": { "main": [[{ "node": "Upload Episode to S3", "type": "main", "index": 0 }]] },
+    "Upload Episode to S3": { "main": [[{ "node": "Build Episode Metadata", "type": "main", "index": 0 }]] },
+    "Build Episode Metadata": { "main": [[{ "node": "Slack: Announce Episode", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Slack: Alert on Failure", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  },
+  "tags": [
+    { "name": "portfolio" },
+    { "name": "voice-ai" },
+    { "name": "content" }
+  ]
+}

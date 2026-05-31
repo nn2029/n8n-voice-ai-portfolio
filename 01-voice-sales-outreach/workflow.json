@@ -1,0 +1,262 @@
+{
+  "name": "AI Voice Sales Outreach Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Webhook: New Lead",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "voice-outreach-new-lead"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize and validate incoming lead payload.\n// Accepts payloads from HubSpot, Pipedrive, Apollo, or a generic form.\n// Fails fast with a structured error if required fields are missing.\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst lead = {\n  first_name: body.first_name || body.firstName || body.first || '',\n  last_name:  body.last_name  || body.lastName  || body.last  || '',\n  email:      body.email || '',\n  company:    body.company || body.company_name || body.organization || '',\n  role:       body.title || body.job_title || body.role || '',\n  signal:     body.signal || body.trigger || body.source || 'inbound',\n  linkedin:   body.linkedin_url || body.linkedin || '',\n  notes:      body.notes || ''\n};\n\nconst missing = ['first_name','company','email'].filter(k => !lead[k]);\nif (missing.length) {\n  throw new Error(`Missing required lead fields: ${missing.join(', ')}`);\n}\n\nlead.full_name = `${lead.first_name} ${lead.last_name}`.trim();\nlead.received_at = new Date().toISOString();\n\nreturn [{ json: lead }];"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Normalize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apollo.io/v1/people/match",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "email", "value": "={{ $json.email }}" },
+            { "name": "reveal_personal_emails", "value": "false" }
+          ]
+        },
+        "options": {
+          "timeout": 8000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Enrich via Apollo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Apollo X-Api-Key" }
+      },
+      "notes": "Optional. Soft-fail via neverError. Create a Header Auth credential in n8n with Name=X-Api-Key, Value=YOUR_APOLLO_KEY, then select it on this node."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the prompt context for the LLM.\n// Merge raw lead with Apollo enrichment (if any) and produce a tight system+user prompt pair.\n\nconst lead = $('Normalize Lead').first().json;\nconst enrichment = $input.first().json?.person || {};\n\nconst context = {\n  name: lead.full_name,\n  company: lead.company,\n  role: enrichment.title || lead.role || 'Unknown',\n  seniority: enrichment.seniority || '',\n  industry: enrichment.organization?.industry || '',\n  company_size: enrichment.organization?.estimated_num_employees || '',\n  signal: lead.signal,\n  notes: lead.notes\n};\n\nconst system_prompt = `You are a senior SDR writing a 30-second voicemail script.\nRules:\n- Open with the prospect's first name, your name (\"Sam from Lumen\"), and a personalized hook from the signal.\n- One value claim tied to their role/industry. No generic platitudes.\n- One specific ask (\"15-minute call this week\").\n- Output ONLY the spoken script. No labels, no stage directions, no XML.\n- 70-95 words. Warm, conversational, no jargon.`;\n\nconst user_prompt = `Prospect:\n- Name: ${context.name}\n- Role: ${context.role}${context.seniority ? ' ('+context.seniority+')' : ''}\n- Company: ${context.company}${context.industry ? ' — '+context.industry : ''}${context.company_size ? ', ~'+context.company_size+' employees' : ''}\n\nSignal that triggered outreach: ${context.signal}\n${context.notes ? 'Internal note: '+context.notes : ''}\n\nWrite the voicemail.`;\n\nreturn [{ json: { ...lead, context, system_prompt, user_prompt } }];"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 400,\n  \"temperature\": 0.7,\n  \"messages\": [\n    { \"role\": \"system\", \"content\": {{ JSON.stringify($json.system_prompt) }} },\n    { \"role\": \"user\",   \"content\": {{ JSON.stringify($json.user_prompt) }} }\n  ]\n}",
+        "options": {
+          "timeout": 30000,
+          "retry": { "retry": { "maxTries": 3, "waitBetweenTries": 2000 } }
+        }
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "OpenAI: Generate Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME", "name": "OpenAI account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract OpenAI's text output and validate length.\n// If the script is malformed or too long for ElevenLabs sweet spot, throw to error branch.\n\nconst response = $input.first().json;\nconst script = response.choices?.[0]?.message?.content?.trim();\n\nif (!script) {\n  throw new Error(`OpenAI returned no script. Full response: ${JSON.stringify(response).slice(0, 500)}`);\n}\n\nconst word_count = script.split(/\\s+/).length;\nif (word_count < 40 || word_count > 130) {\n  throw new Error(`Script length out of bounds (${word_count} words). Expected 70-95.`);\n}\n\n// Pull in the original lead so it flows downstream.\nconst lead = $('Build Prompt').first().json;\n\nreturn [{ json: { ...lead, script, word_count, tokens_in: response.usage?.prompt_tokens, tokens_out: response.usage?.completion_tokens } }];"
+      },
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "Parse + Validate Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/s3TPKV1kjDlVtZbl4Ksh",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "accept", "value": "audio/mpeg" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.script) }},\n  \"model_id\": \"eleven_turbo_v2_5\",\n  \"voice_settings\": {\n    \"stability\": 0.45,\n    \"similarity_boost\": 0.85,\n    \"style\": 0.20,\n    \"use_speaker_boost\": true\n  }\n}",
+        "options": {
+          "timeout": 60000,
+          "response": { "response": { "responseFormat": "file" } },
+          "retry": { "retry": { "maxTries": 3, "waitBetweenTries": 3000 } }
+        }
+      },
+      "id": "a1b2c3d4-0007-4000-8000-000000000007",
+      "name": "ElevenLabs: Synthesize Voice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_ME", "name": "ElevenLabs xi-api-key" }
+      },
+      "notes": "Voice settings tuned for conversational sales outreach:\n- stability 0.45 = natural variation, not robotic\n- similarity_boost 0.85 = high fidelity to cloned voice\n- style 0.20 = mild expressiveness\nturbo_v2_5 for sub-1s latency on short scripts."
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "={{ $env.S3_BUCKET }}",
+        "fileName": "=outreach/{{ $('Parse + Validate Script').first().json.email.replace('@','_at_') }}/{{ $now.toFormat('yyyy-MM-dd-HHmmss') }}.mp3",
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "acl": "public-read",
+          "contentType": "audio/mpeg"
+        }
+      },
+      "id": "a1b2c3d4-0008-4000-8000-000000000008",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reconstruct the R2 audio URL from the SAME deterministic path Upload to S3 used.\n// Inputs: email + received_at (both immutable on the lead from Normalize Lead).\n// This works because the n8n 'S3' node returns only { success: true } — no Bucket/Key.\n\nconst lead = $('Parse + Validate Script').first().json;\nconst upload = $input.first()?.json || {};\n\n// EDIT THIS to your R2 public URL — looks like https://pub-XXXXXXXXXXXX.r2.dev\nconst R2_PUBLIC_BASE = 'https://pub-ee5550efd4674005848220beb733c794.r2.dev';\n\nconst emailKey = lead.email.replace('@', '_at_');\nconst ts = lead.received_at.replace(/[:T.Z-]/g, '').slice(0, 14);\nconst expectedKey = `outreach/${emailKey}/${ts}.mp3`;\n\nlet audio_url;\nif (upload.success && !R2_PUBLIC_BASE.includes('REPLACE_ME')) {\n  audio_url = `${R2_PUBLIC_BASE}/${expectedKey}`;\n} else if (upload.Location) {\n  audio_url = upload.Location;\n} else {\n  audio_url = 'pending-upload (S3 node deactivated or R2_PUBLIC_BASE not set)';\n}\n\nreturn [{\n  json: {\n    lead_name: lead.full_name,\n    email: lead.email,\n    company: lead.company,\n    role: lead.context.role,\n    script: lead.script,\n    word_count: lead.word_count,\n    audio_url,\n    tokens_in: lead.tokens_in,\n    tokens_out: lead.tokens_out,\n    estimated_cost_usd: ((lead.tokens_in * 2.5 + lead.tokens_out * 10) / 1_000_000).toFixed(4),\n    generated_at: new Date().toISOString(),\n    status: 'ready_to_send'\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0009-4000-8000-000000000009",
+      "name": "Build Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "list", "value": "appXXXXXXXXXXXXXX" },
+        "table": { "__rl": true, "mode": "list", "value": "tblOutreach" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Lead": "={{ $json.lead_name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Role": "={{ $json.role }}",
+            "Script": "={{ $json.script }}",
+            "Audio URL": "={{ $json.audio_url }}",
+            "Tokens In": "={{ $json.tokens_in }}",
+            "Tokens Out": "={{ $json.tokens_out }}",
+            "Cost (USD)": "={{ $json.estimated_cost_usd }}",
+            "Generated At": "={{ $json.generated_at }}",
+            "Status": "={{ $json.status }}"
+          }
+        }
+      },
+      "id": "a1b2c3d4-0010-4000-8000-000000000010",
+      "name": "Log to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2220, 220]
+    },
+    {
+      "parameters": {
+        "channel": "#sales-outreach",
+        "text": "=:speaking_head_in_silhouette: *New AI voicemail ready for {{ $json.lead_name }}* at *{{ $json.company }}* ({{ $json.role }})\n\n> {{ $json.script.split('\\n').join('\\n> ') }}\n\n{{ $json.audio_url.startsWith('http') ? ':headphones: <' + $json.audio_url + '|Listen>  •  ' : '' }}:moneybag: ${{ $json.estimated_cost_usd }}  •  :memo: {{ $json.word_count }} words",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "a1b2c3d4-0011-4000-8000-000000000011",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2220, 380]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"ok\",\n  \"audio_url\": {{ JSON.stringify($('Build Record').first().json.audio_url) }},\n  \"script_preview\": {{ JSON.stringify($('Build Record').first().json.script.slice(0, 120) + '...') }}\n}"
+      },
+      "id": "a1b2c3d4-0012-4000-8000-000000000012",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0013-4000-8000-000000000013",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 620]
+    },
+    {
+      "parameters": {
+        "channel": "#automation-alerts",
+        "text": "=:rotating_light: *Voice outreach workflow failed*\n\n*Step:* {{ $json.execution.lastNodeExecuted }}\n*Error:* {{ $json.execution.error.message }}\n*Execution:* <{{ $json.execution.url }}|Open in n8n>",
+        "otherOptions": { "mrkdwn": true }
+      },
+      "id": "a1b2c3d4-0014-4000-8000-000000000014",
+      "name": "Slack: Alert on Failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [460, 620]
+    }
+  ],
+  "connections": {
+    "Webhook: New Lead": { "main": [[{ "node": "Normalize Lead", "type": "main", "index": 0 }]] },
+    "Normalize Lead": { "main": [[{ "node": "Enrich via Apollo", "type": "main", "index": 0 }]] },
+    "Enrich via Apollo": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt": { "main": [[{ "node": "OpenAI: Generate Script", "type": "main", "index": 0 }]] },
+    "OpenAI: Generate Script": { "main": [[{ "node": "Parse + Validate Script", "type": "main", "index": 0 }]] },
+    "Parse + Validate Script": { "main": [[{ "node": "ElevenLabs: Synthesize Voice", "type": "main", "index": 0 }]] },
+    "ElevenLabs: Synthesize Voice": { "main": [[{ "node": "Upload to S3", "type": "main", "index": 0 }]] },
+    "Upload to S3": { "main": [[{ "node": "Build Record", "type": "main", "index": 0 }]] },
+    "Build Record": {
+      "main": [[
+        { "node": "Log to Airtable", "type": "main", "index": 0 },
+        { "node": "Notify Slack", "type": "main", "index": 0 }
+      ]]
+    },
+    "Log to Airtable": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Slack: Alert on Failure", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "tags": [
+    { "name": "portfolio" },
+    { "name": "voice-ai" },
+    { "name": "sales" }
+  ]
+}

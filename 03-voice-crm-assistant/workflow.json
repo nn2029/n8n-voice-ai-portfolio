@@ -1,0 +1,475 @@
+{
+  "name": "Voice-Driven CRM Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slack-voice",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c3d4e5f6-0001-4000-8000-000000000001",
+      "name": "Slack Event: file_shared",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 400],
+      "webhookId": "voice-crm-slack",
+      "notes": "Configure as a Slack Events API endpoint subscribed to file_shared. Slack URL verification handshake handled in the next node."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Slack does TWO things on this endpoint:\n//   1) One-time URL verification: POST { type:'url_verification', challenge:'...' } — must echo challenge.\n//   2) Real events: POST { type:'event_callback', event:{ ... } }\n// We branch here and short-circuit verification.\n//\n// IMPORTANT: Slack's file_shared event does NOT include mime type — only file_id.\n// We fetch full file metadata via Slack: Get File Info downstream, then Whisper handles\n// non-audio gracefully (rejects with a clear API error).\n\nconst body = $input.first().json.body || $input.first().json;\n\nif (body.type === 'url_verification') {\n  return [{ json: { __verification: true, challenge: body.challenge } }];\n}\n\nconst event = body.event;\nif (!event || event.type !== 'file_shared') {\n  return [{ json: { __skip: true, reason: 'Not a file_shared event' } }];\n}\n\nreturn [{ json: {\n  __verification: false,\n  __skip: false,\n  file_id: event.file_id || event.file?.id,\n  user_id: event.user_id,\n  channel_id: event.channel_id || event.channel\n} }];"
+      },
+      "id": "c3d4e5f6-0002-4000-8000-000000000002",
+      "name": "Route Slack Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "is_verify",
+              "leftValue": "={{ $json.__verification }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000003",
+      "name": "If: URL Verification",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"challenge\": {{ JSON.stringify($json.challenge) }} }"
+      },
+      "id": "c3d4e5f6-0004-4000-8000-000000000004",
+      "name": "Echo Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [800, 280]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "is_skip",
+              "leftValue": "={{ $json.__skip }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c3d4e5f6-0005-4000-8000-000000000005",
+      "name": "If: Skip Event",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [800, 520]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ignored\", \"reason\": {{ JSON.stringify($json.reason) }} }",
+        "options": { "responseCode": 200 }
+      },
+      "id": "c3d4e5f6-0006-4000-8000-000000000006",
+      "name": "Respond: Ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"accepted\" }",
+        "options": { "responseCode": 200 }
+      },
+      "id": "c3d4e5f6-0007-4000-8000-000000000007",
+      "name": "Respond: Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1000, 600]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "get",
+        "fileId": "={{ $json.file_id }}"
+      },
+      "id": "c3d4e5f6-0008-4000-8000-000000000008",
+      "name": "Slack: Get File Info",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1200, 600]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url_private_download }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } },
+          "timeout": 30000
+        }
+      },
+      "id": "c3d4e5f6-0009-4000-8000-000000000009",
+      "name": "Download Audio from Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 600],
+      "credentials": {
+        "slackApi": { "id": "REPLACE_ME", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "whisper-1" },
+            { "name": "response_format", "value": "verbose_json" },
+            { "name": "language", "value": "en" },
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "retry": { "retry": { "maxTries": 2, "waitBetweenTries": 2000 } }
+        }
+      },
+      "id": "c3d4e5f6-0010-4000-8000-000000000010",
+      "name": "Whisper: Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1600, 600],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME", "name": "OpenAI account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reject silent / too-short / hallucinated transcripts before spending LLM tokens.\nconst t = $input.first().json;\nconst text = (t.text || '').trim();\nconst duration = t.duration || 0;\n\nif (!text || text.length < 3) throw new Error('Empty transcript');\nif (duration < 1.0) throw new Error(`Audio too short (${duration}s)`);\nif (duration > 120) throw new Error(`Audio too long (${duration}s) — limit is 2 minutes per voice note`);\n\n// Whisper sometimes hallucinates 'Thank you for watching.' on near-silent inputs.\nconst hallucinations = ['thank you for watching', 'thanks for watching', 'subscribe', 'subtitles by'];\nif (hallucinations.some(h => text.toLowerCase().includes(h)) && text.length < 60) {\n  throw new Error(`Likely Whisper hallucination on near-silent audio: \"${text}\"`);\n}\n\n// Pull through user context for memory.\nconst slack_meta = $('Route Slack Event').first().json;\n\nreturn [{ json: {\n  transcript: text,\n  duration_seconds: duration,\n  language: t.language,\n  user_id: slack_meta.user_id,\n  channel_id: slack_meta.channel_id\n} }];"
+      },
+      "id": "c3d4e5f6-0011-4000-8000-000000000011",
+      "name": "Validate Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 600]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "voice_conversations",
+        "returnAll": false,
+        "limit": 10,
+        "filters": {
+          "conditions": [
+            { "keyName": "user_id", "condition": "eq", "keyValue": "={{ $json.user_id }}" }
+          ]
+        },
+        "sort": {
+          "sortRules": [
+            { "field": "created_at", "direction": "DESC" }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0012-4000-8000-000000000012",
+      "name": "Supabase: Load Recent Context",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2000, 600],
+      "notes": "Pulls the last 10 turns of conversation history for short-term memory. Reverse chronological → Code node flips order before sending to the LLM."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build an OpenAI function-calling request with conversation memory + tool definitions.\n\nconst current = $('Validate Transcript').first().json;\n// Filter out empty placeholder rows that Always Output Data adds when there's no real history.\nconst history = $input.all()\n  .filter(row => row.json && row.json.user_transcript)\n  .reverse(); // oldest first\n\nconst system = `You are a CRM voice assistant. The user is on Slack and just left you a voice note. Decide what CRM action to take, or whether to answer a question.\n\nUse a tool when the user asks for a CRM action. Confirm what you did in a single short sentence — this will be spoken aloud, so no markdown, no lists. Be concise (under 30 words).\n\nIf the user is asking a question or just chatting, answer without calling a tool.`;\n\n// Convert history rows into OpenAI chat message turns.\nconst memory_messages = history.flatMap(row => {\n  const r = row.json;\n  const out = [{ role: 'user', content: r.user_transcript }];\n  if (r.assistant_response) out.push({ role: 'assistant', content: r.assistant_response });\n  return out;\n});\n\nconst messages = [\n  { role: 'system', content: system },\n  ...memory_messages,\n  { role: 'user', content: current.transcript }\n];\n\n// OpenAI function calling format: tools are wrapped { type: 'function', function: { ... parameters ... } }.\nconst tools = [\n  {\n    type: 'function',\n    function: {\n      name: 'create_contact',\n      description: 'Create a new contact in the CRM.',\n      parameters: {\n        type: 'object',\n        properties: {\n          name: { type: 'string' },\n          company: { type: 'string' },\n          email: { type: 'string' },\n          notes: { type: 'string' }\n        },\n        required: ['name']\n      }\n    }\n  },\n  {\n    type: 'function',\n    function: {\n      name: 'log_activity',\n      description: 'Log an activity (call, meeting, email) against an existing contact.',\n      parameters: {\n        type: 'object',\n        properties: {\n          contact_query: { type: 'string', description: 'Name or company to find the contact by' },\n          activity_type: { type: 'string', enum: ['call','meeting','email','note'] },\n          summary: { type: 'string' }\n        },\n        required: ['contact_query','activity_type','summary']\n      }\n    }\n  },\n  {\n    type: 'function',\n    function: {\n      name: 'query_contact',\n      description: 'Look up information about a contact.',\n      parameters: {\n        type: 'object',\n        properties: { query: { type: 'string' } },\n        required: ['query']\n      }\n    }\n  }\n];\n\nreturn [{ json: {\n  ...current,\n  openai_payload: {\n    model: 'gpt-4o',\n    max_tokens: 600,\n    temperature: 0.4,\n    messages,\n    tools,\n    tool_choice: 'auto'\n  }\n} }];"
+      },
+      "id": "c3d4e5f6-0013-4000-8000-000000000013",
+      "name": "Build OpenAI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.openai_payload) }}",
+        "options": {
+          "timeout": 30000,
+          "retry": { "retry": { "maxTries": 2, "waitBetweenTries": 2000 } }
+        }
+      },
+      "id": "c3d4e5f6-0014-4000-8000-000000000014",
+      "name": "OpenAI: Function Calling",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 600],
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME", "name": "OpenAI account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse OpenAI's function-calling response. Either a tool_calls array or direct content.\n// OpenAI's tool_calls is on choices[0].message.tool_calls; arguments is a STRING (must JSON.parse).\nconst resp = $input.first().json;\nconst current = $('Build OpenAI Request').first().json;\n\nconst choice = resp.choices?.[0];\nif (!choice) throw new Error(`OpenAI returned no choices. Full: ${JSON.stringify(resp).slice(0, 500)}`);\n\nconst message = choice.message || {};\nconst finish_reason = choice.finish_reason;\nconst tool_calls = message.tool_calls || [];\nconst content = message.content;\n\nconst tokens_in = resp.usage?.prompt_tokens || 0;\nconst tokens_out = resp.usage?.completion_tokens || 0;\n\nif (tool_calls.length > 0) {\n  const call = tool_calls[0];\n  let parsed_args;\n  try { parsed_args = JSON.parse(call.function.arguments); }\n  catch (e) { throw new Error(`Failed to parse tool arguments JSON: ${e.message}. Got: ${call.function.arguments}`); }\n  return [{ json: {\n    user_id: current.user_id,\n    channel_id: current.channel_id,\n    transcript: current.transcript,\n    action: 'tool',\n    tool_name: call.function.name,\n    tool_input: parsed_args,\n    tool_use_id: call.id,\n    text_preamble: content || '',\n    tokens_in, tokens_out\n  } }];\n}\n\nif (content) {\n  return [{ json: {\n    user_id: current.user_id,\n    channel_id: current.channel_id,\n    transcript: current.transcript,\n    action: 'reply',\n    reply_text: content,\n    tokens_in, tokens_out\n  } }];\n}\n\nthrow new Error(`OpenAI returned no usable content. finish_reason=${finish_reason}`);"
+      },
+      "id": "c3d4e5f6-0015-4000-8000-000000000015",
+      "name": "Parse OpenAI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2600, 600]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "create_contact", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "create_contact", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "log_activity",  "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "log_activity",  "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "query_contact", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "query_contact", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "reply",         "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.action }}",   "rightValue": "reply",         "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "c3d4e5f6-0016-4000-8000-000000000016",
+      "name": "Switch: Tool Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [2800, 600]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "contacts",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "name",    "fieldValue": "={{ $json.tool_input.name }}" },
+            { "fieldId": "company", "fieldValue": "={{ $json.tool_input.company || '' }}" },
+            { "fieldId": "email",   "fieldValue": "={{ $json.tool_input.email   || '' }}" },
+            { "fieldId": "notes",   "fieldValue": "={{ $json.tool_input.notes   || '' }}" },
+            { "fieldId": "created_by", "fieldValue": "={{ $json.user_id }}" }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0017-4000-8000-000000000017",
+      "name": "Supabase: Create Contact",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3000, 360]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "activities",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "contact_query", "fieldValue": "={{ $json.tool_input.contact_query }}" },
+            { "fieldId": "activity_type", "fieldValue": "={{ $json.tool_input.activity_type }}" },
+            { "fieldId": "summary",       "fieldValue": "={{ $json.tool_input.summary }}" },
+            { "fieldId": "user_id",       "fieldValue": "={{ $json.user_id }}" }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0018-4000-8000-000000000018",
+      "name": "Supabase: Log Activity",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3000, 560]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "contacts",
+        "returnAll": false,
+        "limit": 3,
+        "filters": {
+          "conditions": [
+            { "keyName": "name", "condition": "ilike", "keyValue": "=%{{ $json.tool_input.query }}%" }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0019-4000-8000-000000000019",
+      "name": "Supabase: Find Contact",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3000, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Synthesize a short spoken confirmation/result based on which tool ran.\n// This is what gets spoken back to the user via ElevenLabs.\nconst src = $input.first().json;\nconst tool_result = src; // raw row(s) from Supabase\n\nconst priorCtx = $('Parse OpenAI Response').first().json;\nconst toolName = priorCtx.tool_name;\nconst toolInput = priorCtx.tool_input;\n\nlet spoken;\nswitch (toolName) {\n  case 'create_contact':\n    spoken = `Created contact for ${toolInput.name}${toolInput.company ? ' at ' + toolInput.company : ''}.`;\n    break;\n  case 'log_activity':\n    spoken = `Logged a ${toolInput.activity_type} for ${toolInput.contact_query}.`;\n    break;\n  case 'query_contact': {\n    const rows = Array.isArray(tool_result) ? tool_result : [tool_result];\n    if (!rows.length || !rows[0].name) spoken = `I couldn't find anyone matching ${toolInput.query}.`;\n    else if (rows.length === 1) spoken = `Found ${rows[0].name}${rows[0].company ? ' at ' + rows[0].company : ''}.${rows[0].notes ? ' Notes: ' + rows[0].notes.slice(0, 120) : ''}`;\n    else spoken = `Found ${rows.length} matches. Top one: ${rows[0].name}${rows[0].company ? ' at ' + rows[0].company : ''}.`;\n    break;\n  }\n  default:\n    spoken = priorCtx.text_preamble || 'Done.';\n}\n\nreturn [{ json: {\n  user_id: priorCtx.user_id,\n  channel_id: priorCtx.channel_id,\n  transcript: priorCtx.transcript,\n  reply_text: spoken,\n  tool_name: toolName,\n  tokens_in: priorCtx.tokens_in,\n  tokens_out: priorCtx.tokens_out\n} }];"
+      },
+      "id": "c3d4e5f6-0020-4000-8000-000000000020",
+      "name": "Build Spoken Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3200, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/s3TPKV1kjDlVtZbl4Ksh",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "accept", "value": "audio/mpeg" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.reply_text) }},\n  \"model_id\": \"eleven_turbo_v2_5\",\n  \"voice_settings\": {\n    \"stability\": 0.55,\n    \"similarity_boost\": 0.80,\n    \"style\": 0.10,\n    \"use_speaker_boost\": true\n  }\n}",
+        "options": {
+          "timeout": 30000,
+          "response": { "response": { "responseFormat": "file" } },
+          "retry": { "retry": { "maxTries": 3, "waitBetweenTries": 2000 } }
+        }
+      },
+      "id": "c3d4e5f6-0021-4000-8000-000000000021",
+      "name": "ElevenLabs: Synthesize Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3400, 560],
+      "credentials": {
+        "httpHeaderAuth": { "id": "REPLACE_ME", "name": "ElevenLabs xi-api-key" }
+      },
+      "notes": "Assistant voice settings: stability 0.55 (steady, trustworthy), style 0.10 (low — assistants should sound calm, not theatrical)."
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "fileName": "=assistant-reply-{{ $now.toFormat('yyyyMMdd-HHmmss') }}.mp3",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "options": {
+          "channelIds": "={{ $json.channel_id }}",
+          "initialComment": "=:robot_face: Re: _\"{{ $('Build Spoken Reply').first().json.transcript.slice(0, 80) }}...\"_\n_Action: {{ $('Build Spoken Reply').first().json.tool_name || 'reply' }}_"
+        }
+      },
+      "id": "c3d4e5f6-0022-4000-8000-000000000022",
+      "name": "Slack: Upload Reply",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3600, 560]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "voice_conversations",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "user_id",            "fieldValue": "={{ $('Build Spoken Reply').first().json.user_id }}" },
+            { "fieldId": "user_transcript",    "fieldValue": "={{ $('Build Spoken Reply').first().json.transcript }}" },
+            { "fieldId": "assistant_response", "fieldValue": "={{ $('Build Spoken Reply').first().json.reply_text }}" },
+            { "fieldId": "tool_called",        "fieldValue": "={{ $('Build Spoken Reply').first().json.tool_name || 'none' }}" },
+            { "fieldId": "tokens_in",          "fieldValue": "={{ $('Build Spoken Reply').first().json.tokens_in }}" },
+            { "fieldId": "tokens_out",         "fieldValue": "={{ $('Build Spoken Reply').first().json.tokens_out }}" }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0023-4000-8000-000000000023",
+      "name": "Supabase: Save Conversation Turn",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [3800, 560]
+    },
+    {
+      "parameters": {},
+      "id": "c3d4e5f6-0024-4000-8000-000000000024",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 900]
+    },
+    {
+      "parameters": {
+        "channel": "#automation-alerts",
+        "text": "=:rotating_light: *Voice CRM assistant failed*\n*Step:* {{ $json.execution.lastNodeExecuted }}\n*Error:* {{ $json.execution.error.message }}\n*Execution:* <{{ $json.execution.url }}|Open>",
+        "otherOptions": { "mrkdwn": true }
+      },
+      "id": "c3d4e5f6-0025-4000-8000-000000000025",
+      "name": "Slack: Alert on Failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [400, 900]
+    }
+  ],
+  "connections": {
+    "Slack Event: file_shared": { "main": [[{ "node": "Route Slack Event", "type": "main", "index": 0 }]] },
+    "Route Slack Event": { "main": [[{ "node": "If: URL Verification", "type": "main", "index": 0 }]] },
+    "If: URL Verification": {
+      "main": [
+        [{ "node": "Echo Challenge", "type": "main", "index": 0 }],
+        [{ "node": "If: Skip Event", "type": "main", "index": 0 }]
+      ]
+    },
+    "If: Skip Event": {
+      "main": [
+        [{ "node": "Respond: Ignored", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Accepted", "type": "main", "index": 0 }]
+      ]
+    },
+    "Respond: Accepted": { "main": [[{ "node": "Slack: Get File Info", "type": "main", "index": 0 }]] },
+    "Slack: Get File Info": { "main": [[{ "node": "Download Audio from Slack", "type": "main", "index": 0 }]] },
+    "Download Audio from Slack": { "main": [[{ "node": "Whisper: Transcribe", "type": "main", "index": 0 }]] },
+    "Whisper: Transcribe": { "main": [[{ "node": "Validate Transcript", "type": "main", "index": 0 }]] },
+    "Validate Transcript": { "main": [[{ "node": "Supabase: Load Recent Context", "type": "main", "index": 0 }]] },
+    "Supabase: Load Recent Context": { "main": [[{ "node": "Build OpenAI Request", "type": "main", "index": 0 }]] },
+    "Build OpenAI Request": { "main": [[{ "node": "OpenAI: Function Calling", "type": "main", "index": 0 }]] },
+    "OpenAI: Function Calling": { "main": [[{ "node": "Parse OpenAI Response", "type": "main", "index": 0 }]] },
+    "Parse OpenAI Response": { "main": [[{ "node": "Switch: Tool Router", "type": "main", "index": 0 }]] },
+    "Switch: Tool Router": {
+      "main": [
+        [{ "node": "Supabase: Create Contact", "type": "main", "index": 0 }],
+        [{ "node": "Supabase: Log Activity",  "type": "main", "index": 0 }],
+        [{ "node": "Supabase: Find Contact",  "type": "main", "index": 0 }],
+        [{ "node": "Build Spoken Reply",      "type": "main", "index": 0 }]
+      ]
+    },
+    "Supabase: Create Contact": { "main": [[{ "node": "Build Spoken Reply", "type": "main", "index": 0 }]] },
+    "Supabase: Log Activity":   { "main": [[{ "node": "Build Spoken Reply", "type": "main", "index": 0 }]] },
+    "Supabase: Find Contact":   { "main": [[{ "node": "Build Spoken Reply", "type": "main", "index": 0 }]] },
+    "Build Spoken Reply": { "main": [[{ "node": "ElevenLabs: Synthesize Reply", "type": "main", "index": 0 }]] },
+    "ElevenLabs: Synthesize Reply": { "main": [[{ "node": "Slack: Upload Reply", "type": "main", "index": 0 }]] },
+    "Slack: Upload Reply": { "main": [[{ "node": "Supabase: Save Conversation Turn", "type": "main", "index": 0 }]] },
+    "Error Trigger": { "main": [[{ "node": "Slack: Alert on Failure", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  },
+  "tags": [
+    { "name": "portfolio" },
+    { "name": "voice-ai" },
+    { "name": "conversational" }
+  ]
+}
