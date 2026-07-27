@@ -1,0 +1,51 @@
+name: Production Agent Platform CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "04-production-agent-platform/**"
+      - ".github/workflows/production-agent-platform-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "04-production-agent-platform/**"
+      - ".github/workflows/production-agent-platform-ci.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend
+        working-directory: 04-production-agent-platform/backend
+        run: pip install -r requirements.txt
+      - name: Backend tests
+        working-directory: 04-production-agent-platform/backend
+        run: pytest -q
+      - name: Compile backend
+        working-directory: 04-production-agent-platform/backend
+        run: python -m compileall app tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend
+        working-directory: 04-production-agent-platform/frontend
+        run: npm install
+      - name: Build frontend
+        working-directory: 04-production-agent-platform/frontend
+        run: npm run build
+      - name: Validate n8n workflow JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          paths = list(Path('04-production-agent-platform/workflows').glob('*.json'))
+          assert paths, 'No workflow files found'
+          for path in paths:
+              json.loads(path.read_text())
+              print('valid', path)
+          PY
