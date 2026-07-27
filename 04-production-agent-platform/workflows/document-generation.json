@@ -1,0 +1,31 @@
+{
+  "name": "Production Control Plane - Document Generation",
+  "nodes": [
+    {
+      "parameters": {"httpMethod": "POST", "path": "agent-document-generation", "responseMode": "responseNode"},
+      "id": "webhook", "name": "Document Request", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0]
+    },
+    {
+      "parameters": {"jsCode": "const body=$json.body||$json; return [{json:{tenant_id:body.tenant_id,agent_id:body.agent_id,idempotency_key:body.idempotency_key||`doc:${Date.now()}`,payload:{subject:body.subject,brief:body.brief,recipient:body.recipient}}}];"},
+      "id": "normalize", "name": "Prepare Brief", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [240, 0]
+    },
+    {
+      "parameters": {"method": "POST", "url": "={{$env.AGENT_API_URL}}/v1/agents/{{$json.agent_id}}/execute", "sendBody": true, "contentType": "raw", "rawContentType": "application/json", "body": "={{ JSON.stringify({tenant_id:$json.tenant_id,idempotency_key:$json.idempotency_key,payload:$json.payload}) }}"},
+      "id": "execute", "name": "Generate through Control Plane", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [500, 0]
+    },
+    {
+      "parameters": {"respondWith": "json", "responseBody": "={{$json}}"},
+      "id": "respond", "name": "Return Approval State", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4, "position": [760, 0]
+    }
+  ],
+  "connections": {
+    "Document Request": {"main": [[{"node": "Prepare Brief", "type": "main", "index": 0}]]},
+    "Prepare Brief": {"main": [[{"node": "Generate through Control Plane", "type": "main", "index": 0}]]},
+    "Generate through Control Plane": {"main": [[{"node": "Return Approval State", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "33333333-3333-4333-8333-333333333333",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}
