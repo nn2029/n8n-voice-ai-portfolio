@@ -1,0 +1,31 @@
+{
+  "name": "Voice Operations - Post Call Processing",
+  "nodes": [
+    {
+      "parameters": {"httpMethod": "POST", "path": "voice-provider-event", "responseMode": "responseNode"},
+      "id": "webhook", "name": "Voice Provider Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0]
+    },
+    {
+      "parameters": {"jsCode": "const body=$json.body||$json; if(!body.event_id) throw new Error('event_id required'); return [{json:{provider:body.provider||'demo',event_id:body.event_id,payload:body}}];"},
+      "id": "normalize", "name": "Validate Provider Event", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [240, 0]
+    },
+    {
+      "parameters": {"method": "POST", "url": "={{$env.AGENT_API_URL}}/v1/voice/provider-events", "sendBody": true, "contentType": "raw", "rawContentType": "application/json", "body": "={{ JSON.stringify($json) }}"},
+      "id": "dedupe", "name": "Register Event", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [500, 0]
+    },
+    {
+      "parameters": {"respondWith": "json", "responseBody": "={{$json}}"},
+      "id": "respond", "name": "Acknowledge", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4, "position": [760, 0]
+    }
+  ],
+  "connections": {
+    "Voice Provider Webhook": {"main": [[{"node": "Validate Provider Event", "type": "main", "index": 0}]]},
+    "Validate Provider Event": {"main": [[{"node": "Register Event", "type": "main", "index": 0}]]},
+    "Register Event": {"main": [[{"node": "Acknowledge", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "44444444-4444-4444-8444-444444444444",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}
