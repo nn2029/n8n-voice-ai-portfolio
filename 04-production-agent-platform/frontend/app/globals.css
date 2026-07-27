@@ -1,0 +1,28 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #090b10; color: #f4f7fb; }
+* { box-sizing: border-box; }
+body { margin: 0; background: radial-gradient(circle at top right, #15243c, transparent 34rem), #090b10; }
+main { max-width: 1180px; margin: 0 auto; padding: 72px 24px 96px; }
+header { max-width: 900px; }
+h1 { font-size: clamp(2.6rem, 7vw, 5.8rem); line-height: .98; letter-spacing: -.055em; margin: 18px 0 24px; }
+.lede { max-width: 780px; color: #a9b4c7; font-size: 1.1rem; line-height: 1.75; }
+.eyebrow { color: #72d7ff; text-transform: uppercase; letter-spacing: .18em; font-size: .73rem; font-weight: 700; }
+.status { display: inline-block; margin-top: 22px; border: 1px solid #5d3340; color: #ff9cb7; padding: 8px 12px; border-radius: 999px; font-size: .8rem; }
+.status.online { border-color: #245c50; color: #76f0c8; }
+.headerRow { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.message { color: #a9b4c7; font-size: .9rem; }
+.actionBar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 40px; padding: 14px; border: 1px solid #243044; border-radius: 16px; background: rgba(16, 22, 33, .68); }
+button { cursor: pointer; border: 1px solid #34506f; background: #142238; color: #eef8ff; padding: 10px 14px; border-radius: 10px; font-weight: 650; }
+button:hover:not(:disabled) { border-color: #72d7ff; transform: translateY(-1px); }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 64px; }
+.grid article, .capabilities article { border: 1px solid #243044; background: rgba(16, 22, 33, .74); border-radius: 20px; padding: 24px; }
+pre { background: #080a0e; border: 1px solid #1e2735; border-radius: 12px; min-height: 120px; padding: 16px; overflow: auto; color: #8fe6ff; }
+.capabilities { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.capabilities h3 { margin-top: 0; }
+.capabilities p { color: #a9b4c7; line-height: 1.65; }
+.approval { margin-top: 14px; padding: 14px; border: 1px solid #6b4e23; border-radius: 12px; background: rgba(95, 61, 15, .18); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.approval small { display: block; color: #a9b4c7; margin-top: 4px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.bookingForm { display: grid; gap: 10px; margin-top: 18px; }
+.bookingForm label { color: #a9b4c7; font-size: .85rem; }
+input { width: 100%; border: 1px solid #2a3a50; background: #080a0e; color: #f4f7fb; padding: 11px 12px; border-radius: 10px; }
+@media (max-width: 800px) { .grid, .capabilities { grid-template-columns: 1fr; } main { padding-top: 44px; } }
