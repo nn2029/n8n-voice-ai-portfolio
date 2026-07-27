@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,13 @@ from .voice import VoiceOperationsService
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Production Agent Platform", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["content-type", "idempotency-key", "authorization"],
+)
 
 
 @app.get("/health")
