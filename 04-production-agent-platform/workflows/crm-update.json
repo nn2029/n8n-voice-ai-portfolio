@@ -1,0 +1,31 @@
+{
+  "name": "Production Control Plane - CRM Update",
+  "nodes": [
+    {
+      "parameters": {"httpMethod": "POST", "path": "agent-crm-update", "responseMode": "responseNode"},
+      "id": "webhook", "name": "CRM Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0]
+    },
+    {
+      "parameters": {"jsCode": "const body=$json.body||$json; if(!body.contact_id&&!body.email) throw new Error('contact_id or email required'); return [{json:{tenant_id:body.tenant_id,agent_id:body.agent_id,idempotency_key:body.idempotency_key||`crm:${body.event_id}`,payload:body}}];"},
+      "id": "normalize", "name": "Validate CRM Event", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [240, 0]
+    },
+    {
+      "parameters": {"method": "POST", "url": "={{$env.AGENT_API_URL}}/v1/agents/{{$json.agent_id}}/execute", "sendBody": true, "contentType": "raw", "rawContentType": "application/json", "body": "={{ JSON.stringify({tenant_id:$json.tenant_id,idempotency_key:$json.idempotency_key,payload:$json.payload}) }}"},
+      "id": "execute", "name": "Execute via Control Plane", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [500, 0]
+    },
+    {
+      "parameters": {"respondWith": "json", "responseBody": "={{$json}}"},
+      "id": "respond", "name": "Respond", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.4, "position": [760, 0]
+    }
+  ],
+  "connections": {
+    "CRM Webhook": {"main": [[{"node": "Validate CRM Event", "type": "main", "index": 0}]]},
+    "Validate CRM Event": {"main": [[{"node": "Execute via Control Plane", "type": "main", "index": 0}]]},
+    "Execute via Control Plane": {"main": [[{"node": "Respond", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "versionId": "22222222-2222-4222-8222-222222222222",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}
