@@ -1,14 +1,16 @@
 # Project 3 — Voice-Driven CRM Assistant
 
-> Drop a voice note in Slack. The assistant transcribes it with Whisper, decides whether to create a contact, log an activity, query the database, or just answer a question — using **OpenAI GPT-4o function calling** with three strict-schema tools. It runs the action against Supabase, then replies with a spoken confirmation in your cloned voice. Every turn is logged for short-term memory so it can handle "log a call with him too" right after "create a contact for Priya at Northwind."
+> **State:** ran on n8n Cloud in May 2026. The recorded run covers creating a contact. Logging an activity and looking up a contact are built, and I have no recording of them.
 
-## What it proves
+> Drop a voice note in Slack. The assistant transcribes it with Whisper, decides whether to create a contact, log an activity, query the database, or just answer a question — using **OpenAI GPT-4o function calling** with three typed tools. It runs the action against Supabase, then replies with a spoken confirmation in your cloned voice. Every turn is logged for short-term memory so it can handle "log a call with him too" right after "create a contact for Priya at Northwind."
+
+## What it covers
 
 - **Full conversational loop**: STT (Whisper) → reasoning (GPT-4o with function calling) → action (Supabase) → TTS (ElevenLabs) → delivery (Slack file upload).
-- **OpenAI function calling** — three tools with strict JSON schemas (`tool_choice: auto`), dispatched via a Switch node, results threaded back into a spoken reply. Arguments arrive as a JSON string per the OpenAI spec — handled with a parse-and-validate Code node.
+- **OpenAI function calling** — three tools with typed JSON schemas and required fields (`tool_choice: auto`), dispatched via a Switch node, results threaded back into a spoken reply. Arguments arrive as a JSON string per the OpenAI spec — handled with a parse-and-validate Code node.
 - **Short-term conversational memory** via Supabase: last 10 turns per user replayed into the LLM's message array.
-- **Defensive input handling** — Slack URL verification handshake, mime-type gating, transcript validation, Whisper hallucination detection.
-- **Production polish** — error sub-workflow, retries on every external call, separate response paths for verification / ignored / accepted.
+- **Defensive input handling** — Slack URL verification handshake, transcript validation, Whisper hallucination detection.
+- **Operations** — error workflow, one retry on the model call, separate response paths for verification / ignored / accepted.
 
 ## Architecture
 
@@ -104,7 +106,7 @@ A naive design would prompt: "Output `{action: 'create_contact', ...}` JSON." Th
 
 OpenAI function calling solves three problems at once:
 
-1. **Structured input validation** — the `parameters` JSON Schema on each `tools[].function` is enforced at the API boundary. The model *cannot* return a `create_contact` call missing a `name`.
+1. **Structured input validation** — the `parameters` JSON Schema on each `tools[].function` is sent with the request and marks `name` as required. The schemas do not use OpenAI's strict mode, so the workflow still parses and checks the arguments.
 2. **Mixed responses** — a single completion can contain `message.content` (text preamble) *and* `message.tool_calls[]`. Both are surfaced; the text is used as the spoken preamble ("Sure, logging that — call with Priya about Q3 routing").
 3. **No-tool path** — if the user just asks a question, the model returns only `message.content` with `finish_reason: 'stop'`. No brittle "is this a tool call?" regex needed.
 
@@ -177,9 +179,9 @@ Try these in sequence to exercise the memory:
 
 The third call has no contact name in the audio — GPT-4o resolves "Northwind" via the conversation memory.
 
-## Production gotchas (worth knowing for interview)
+## Problems found while building
 
-These are the real issues hit during build — each is a good "tell me about a bug you debugged" interview answer.
+These are the issues I hit during the build.
 
 ### 1. Slack `file_shared` event has NO mime type
 
@@ -189,7 +191,7 @@ Documented as carrying a `file` object, but in practice Slack sends only `file_i
 
 A single voice note in Slack triggers the event multiple times as the file moves through Slack's lifecycle (recording started → upload complete → auto-transcription done → shared in channel). Each fire is an independent execution. Without idempotency, you get duplicate Supabase rows for every voice note.
 
-**Idempotency fix** (drop-in Code node, place right after `Slack: Get File Info`):
+**Idempotency fix** (a Code node to place right after `Slack: Get File Info`). This check is not in `workflow.json` yet:
 
 ```javascript
 // Skip if we've already processed this file_id in the last hour.
@@ -227,7 +229,7 @@ The newer n8n Slack node version wants `channelId` as a plain string, not an arr
 - [x] **Tables wired in each Supabase node** via "From list" (not "By ID" — that requires the literal `tbl_id`). Filter on `Load Recent Context` set to `user_id = {{ $json.user_id }}`. Settings → **Always Output Data: ON** on `Load Recent Context`.
 - [x] Activate workflow → copy production webhook URL → paste into Slack Event Subscriptions Request URL → wait for green verified ✓ → reinstall app to workspace.
 
-## Test sequence (proves the conversational loop)
+## Test sequence
 
 In Slack `#sales-outreach` (or any channel the bot is in), drop voice notes in sequence:
 
@@ -238,7 +240,7 @@ In Slack `#sales-outreach` (or any channel the bot is in), drop voice notes in s
 2. **"Log a call with her about Q3 routing pricing."**
    → Bot replies: *"Logged a call for Priya Mehta."*
    → New row in Supabase `activities` table.
-   → **The "her" pronoun resolution proves memory works** — only possible because GPT-4o saw turn #1 in its messages array.
+   → **"Her" is resolved from memory**, because GPT-4o is sent turn #1 in its messages array.
 
 3. **"Who do I know at Northwind?"**
    → Bot replies: *"Found Priya Mehta at Northwind Logistics."*

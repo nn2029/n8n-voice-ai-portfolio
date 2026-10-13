@@ -2,12 +2,12 @@
 
 > A new lead drops into your CRM. 15 seconds later, your founder's cloned voice is leaving them a personalized 30-second voicemail referencing their role, company, and the exact signal that triggered the outreach.
 
-## What it proves
+## What it covers
 
-- **n8n mastery**: webhook → Code node normalization → conditional enrichment → LLM call → conditional validation → binary file handling → multi-output fan-out → response node, plus a dedicated error sub-workflow.
-- **ElevenLabs depth**: voice cloning with tuned `stability`, `similarity_boost`, `style`, and `use_speaker_boost` — values picked deliberately, not defaults.
+- **Workflow structure**: webhook → Code node normalization → conditional enrichment → LLM call → conditional validation → binary file handling → multi-output fan-out → response node, plus a dedicated error sub-workflow.
+- **Voice synthesis**: voice cloning with tuned `stability`, `similarity_boost`, `style`, and `use_speaker_boost` — values picked deliberately, not defaults.
 - **LLM orchestration**: structured system+user prompt construction in JS, strict output length validation, token-cost tracking per execution.
-- **Production polish**: error trigger, retry-with-backoff on ElevenLabs (which 429s under burst), public-readable S3 upload, Airtable audit log, Slack notification with cost telemetry.
+- **Operations**: error trigger, retry-with-backoff on ElevenLabs (which 429s under burst), public-readable S3 upload, Airtable audit log, Slack notification with cost telemetry.
 
 ## Architecture
 
@@ -96,7 +96,6 @@ How these were picked:
 - **Style 0.20** — Style exaggeration > 0.3 starts to inject performative cadence (think bad audiobook narrator). 0.2 keeps it conversational.
 - **Speaker boost on** — measurable improvement on cloned-voice tracks at the cost of ~5% more latency. Worth it.
 
-> **Interview talking point**: "These aren't defaults — I A/B'd 12 combinations with a five-person blind listener panel for sales-tone authenticity. The losing configurations either sounded like a podcast intro or a TTS reading."
 
 ## Cost & optimization
 
@@ -114,7 +113,7 @@ Optimizations baked in:
 - Apollo skipped entirely if `lead.title` is already populated by the CRM payload (one-line if-branch in Build Prompt).
 - **Cloudflare R2 over AWS S3** — same S3-compatible API, zero egress fees, 10 GB free tier. Slack-renderable public URLs without IAM gymnastics. The n8n "S3" credential type (not "AWS") with `Force Path Style: ON` and custom endpoint = drop-in swap.
 
-## Production gotchas (worth knowing for interview)
+## Problems found while building
 
 1. **n8n's "S3" node returns only `{success: true}` — no Bucket/Key.** Unlike AWS-flavored nodes that return the upload metadata, the generic S3 node hides it. The Build Record code reconstructs the public URL deterministically from `email + received_at` (both immutable on the lead), so Upload to S3 and Build Record produce the same path without coordination.
 

@@ -11,7 +11,7 @@
 Run the curl in Terminal:
 
 ```bash
-curl -X POST "https://nassamn.app.n8n.cloud/webhook/new-lead" -H 'content-type: application/json' \
+curl -X POST "https://<your-n8n-host>/webhook/new-lead" -H 'content-type: application/json' \
   -d '{"first_name":"Priya","last_name":"Mehta","email":"priya@northwind.io","company":"Northwind Logistics","title":"VP Operations","signal":"Visited the pricing page 3 times this week and downloaded the routing-algorithm whitepaper","notes":"Their CTO follows me on LinkedIn"}'
 ```
 
