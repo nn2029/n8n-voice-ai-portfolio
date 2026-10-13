@@ -1,93 +1,67 @@
-# n8n + ElevenLabs Automation Portfolio
+# n8n voice and AI automation workflows
 
-Three production-grade n8n workflows demonstrating end-to-end AI voice automation: LLM orchestration (OpenAI GPT-4o with JSON mode + function calling), high-fidelity voice synthesis (ElevenLabs), STT (Whisper), and multi-platform API integration.
+Three n8n workflows that combine a language model, speech and ordinary business tools, plus a larger agent platform that runs locally with tests. I built them in 2026 to work through real integration problems: webhooks that fire more than once, model output that has to be checked before it is acted on, and binary audio moving between services.
 
-Built to demonstrate the exact stack and patterns called out in the JD: workflow architecture, voice synthesis tuning, LLM orchestration, complex data handling, and monitoring/optimization.
+Everything here is my own work. Nothing in this repository is running for a customer.
 
----
+## What is in the repository
 
-## Portfolio at a glance
+| Folder | What it does | State |
+|---|---|---|
+| [`01-voice-sales-outreach`](01-voice-sales-outreach) | A new lead arrives by webhook. The workflow writes a short voicemail script with GPT-4o, checks its length, synthesises it with ElevenLabs, stores the audio, logs the run and posts it to Slack. | Ran on n8n Cloud in May 2026 with test leads. |
+| [`02-podcast-factory`](02-podcast-factory) | On a schedule, reads RSS feeds, ranks the stories, has GPT-4o write a two-host script as JSON, synthesises each line with a per-host voice, joins the audio and publishes it. | Designed and built as a workflow file. Not run end to end. |
+| [`03-voice-crm-assistant`](03-voice-crm-assistant) | A Slack voice note is transcribed with Whisper. GPT-4o chooses one of three tools (create a contact, log an activity, look someone up), the workflow runs it against Supabase and replies with a spoken confirmation. | Ran on n8n Cloud in May 2026. One recorded run created a contact from a voice note. |
+| [`04-production-agent-platform`](04-production-agent-platform) | A FastAPI and Next.js platform: a multi-tenant automation control plane and a voice operations agent, with approvals, replay, audit events and provider fallback. Includes n8n reference workflows. | Runs locally in a deterministic mock mode. Covered by automated tests and CI. Not run under customer traffic. |
 
-| # | Project | Status | What it proves | Stack |
-|---|---------|---|---------------|-------|
-| 1 | **AI Voice Sales Outreach Engine** | ✅ Live | Voice synthesis tuning, personalized LLM messaging, full CRM/webhook orchestration | n8n, OpenAI GPT-4o, ElevenLabs, Cloudflare R2, Airtable, Slack |
-| 2 | **AI Podcast / Audio Newsletter Factory** | 📐 Designed | Multi-voice synthesis with per-persona tuning, JSON-mode LLM output, byte-level MP3 stitching | n8n, OpenAI GPT-4o (JSON mode), ElevenLabs (2 voices), R2 |
-| 3 | **Voice-Driven CRM Assistant** | ✅ Live | Full STT → LLM → action → TTS conversational loop, OpenAI function calling with strict schemas, short-term memory | n8n, Whisper, OpenAI GPT-4o (function calling), Supabase, ElevenLabs, Slack |
+Each workflow folder has a `workflow.json` you can import into n8n and a `README.md` covering the architecture, the decisions and the problems found while building it.
 
-Each project folder contains:
-- `workflow.json` — importable into n8n (Workflows → Import from File)
-- `README.md` — architecture, node-by-node walkthrough, design decisions, production gotchas, cost notes
-- `demo-script.md` — 60-90 second interview talking points with prepped follow-up answers
+## Running a workflow
 
-See [`ARTIFACTS.md`](ARTIFACTS.md) for the exact screenshots/recordings to capture for portfolio submission.
+You need n8n (Cloud or self-hosted, version 1.50 or later) and your own accounts for the services a workflow uses.
 
----
+1. In n8n, choose Workflows, then Import from File, and pick the folder's `workflow.json`.
+2. Create the credentials listed below and select them on each node. The files refer to credentials by name only. No keys are stored in this repository.
+3. Publish the workflow and connect its trigger: a webhook for the sales outreach workflow, a Slack event subscription for the CRM assistant, a schedule for the podcast workflow.
+4. Send the test input from that folder's README.
 
-## How to use this portfolio
+| Service | Used by | Notes |
+|---|---|---|
+| OpenAI | 1, 2, 3 | One credential covers chat completions and Whisper transcription. |
+| ElevenLabs | 1, 2, 3 | n8n has no built-in credential type for it, so use Header Auth with the name `xi-api-key`. API access from cloud addresses needs a paid tier. |
+| Cloudflare R2 | 1, 2 | Use n8n's S3 credential type, not AWS, with a custom endpoint and Force Path Style on. |
+| Slack | 1, 2, 3 | A bot token with `chat:write`, `chat:write.public`, `files:read`, `files:write` and `channels:read`. |
+| Airtable | 1 | A personal access token. It needs `schema.bases:read` as well as record access, or n8n's table list stays empty. |
+| Supabase | 3 | Three tables, with the SQL in that folder's README. |
 
-### For the interview
+The agent platform has its own instructions in [`04-production-agent-platform/README.md`](04-production-agent-platform/README.md). It starts with `docker compose up --build` and needs no paid keys in mock mode.
 
-1. **Lead with the architecture diagram** in each README — shows you think in systems, not steps.
-2. **Demo Project 1 live** by running the curl in Terminal and watching nodes flip green in n8n's Executions tab. Then play the actual MP3 from Slack. 30 seconds of demo communicates more than 5 minutes of talking.
-3. **Demo Project 3 live** by recording 3 voice notes in sequence (see `03-voice-crm-assistant/demo-script.md`) — the "her" pronoun resolution between turn 1 and turn 2 is the conversational-memory money shot.
-4. **Talk about cost/token optimization** — every workflow logs per-execution spend. See the "Cost & optimization" section in each README. This separates a senior automator from a tutorial follower.
-5. **Talk about the bugs you hit** — see "Production gotchas" sections. Each gotcha is a "tell me about a bug you debugged" answer that proves you've actually built this, not just imported a template.
+## Decisions that apply across the workflows
 
-### To reproduce yourself
+- **The model proposes, the workflow acts.** In the CRM assistant the model can only choose one of three functions with typed arguments. The database write is done by the workflow. In the other two, the script is validated for length and shape before any audio is paid for.
+- **One model provider.** All three workflows use OpenAI. An early draft mixed providers. One credential, one bill and one rate limit were easier to operate, and function calling settled it for the CRM assistant.
+- **File paths built from data that does not change.** The sales workflow names its audio file from the lead's email and the time the lead was received, not from the current time. Two nodes can then compute the same path independently, which matters because n8n's S3 node does not return the upload location.
+- **Voice settings chosen per use.** The sales voice and the assistant voice use different stability and style values, and the two podcast hosts each have their own.
+- **Cloudflare R2 for audio.** It speaks the S3 API, has a free tier and charges nothing for downloads.
+- **An error workflow on each.** A failed run posts the failing step, the error and a link to the execution in a Slack alerts channel.
 
-1. **n8n** — Cloud or self-hosted, version ≥ 1.50
-2. **API keys / accounts to set up**:
-   - **OpenAI** ($5 min) — powers GPT-4o for all 3 projects + Whisper STT for Project 3. Use n8n's built-in "OpenAi API" credential type.
-   - **ElevenLabs** Starter ($5/mo) — free tier blocks API access from cloud IP ranges. Use Header Auth credential (Name: `xi-api-key`, Value: your key) — n8n Cloud doesn't have a first-party ElevenLabs credential type.
-   - **Cloudflare R2** (free) — bucket with Public Development URL enabled. Use n8n's "S3" credential type (NOT "AWS"), with custom endpoint + Force Path Style ON.
-   - **Slack** (free) — Bot User OAuth Token via api.slack.com/apps. Scopes: `chat:write`, `chat:write.public`, `files:read`, `files:write`, `channels:read`.
-   - **Airtable** (free, Project 1) — Personal Access Token with `data.records:read`, `data.records:write`, `schema.bases:read`.
-   - **Supabase** (free, Project 3) — project with the 3 tables (SQL in P3 README), use legacy `service_role` JWT (NOT new `sb_secret_...`).
+## Problems found while building
 
-3. **Import each `workflow.json`** via n8n's Workflows → "+" → Import from File
-4. **Wire credentials** on each HTTP / first-party node (the imported JSONs reference credentials by name; pick the right one from the dropdown on each node)
-5. **Activate / Publish** the workflow → copy the production webhook URL → wire to the right trigger (CRM webhook for P1, Slack Event Subscription for P3)
-6. Run the test payload (each README's "Test it" section)
+1. **Slack's `file_shared` event carries no file type.** It contains only a file ID. Filtering for audio in the first node rejected every event. The check has to come after the file details are fetched.
+2. **Slack sends `file_shared` several times for one voice note,** as the file moves through recording, upload and sharing. Each one starts a run. The CRM assistant's `workflow.json` does not deduplicate these, so a note can be processed more than once. The fix, a check on the file ID, is described in that folder's README and is not in the file.
+3. **n8n's S3 node returns only `{success: true}`.** There is no bucket or key for later nodes to read, so paths have to be reconstructed.
+4. **n8n's Supabase node stops the workflow when a query returns no rows.** A first-time user has no history. Turning on Always Output Data fixes the stop, and the next step then has to ignore the empty placeholder row it produces.
+5. **OpenAI returns function arguments as a JSON string,** not an object. They have to be parsed, and a parse failure has to be handled.
+6. **ElevenLabs blocks its free tier from cloud addresses.** It is easy to mistake for a credentials problem.
 
----
+## Limits
 
-## Engineering decisions worth defending
+- None of the workflows is running now. Each needs its own credentials to run again.
+- The Slack webhook in the CRM assistant does not verify Slack's request signature.
+- The podcast workflow has not been run end to end, so its audio joining is untested against real episodes.
+- Costs quoted in the folder READMEs are estimates from published price lists, not measured bills.
+- The model's tool schemas use required fields. They do not use OpenAI's strict mode.
 
-- **OpenAI everything** instead of mixing providers. Original draft used Claude for generation. Consolidated to OpenAI for one credential, one bill, one rate limit. Trade-off: weaker "I can use both" narrative, but easier ops. Function calling reliability was the tiebreaker for Project 3.
-- **Cloudflare R2 over AWS S3.** Zero egress fees + 10 GB free tier = $0 storage cost. Same S3 API; n8n's "S3" credential supports custom endpoints (the "AWS" credential type doesn't).
-- **ElevenLabs voice settings are tuned per persona, not defaults.** Project 1 uses `stability: 0.45, similarity_boost: 0.85, style: 0.20` for warm sales tone. Project 3 uses `stability: 0.55, style: 0.10` for assistant calm. Picked from listening tests, not docs.
-- **Deterministic file paths** based on immutable upstream data (`lead.received_at` in P1) instead of `$now()` — different nodes can independently reconstruct the same path without coordination. Critical because n8n's generic S3 node returns only `{success: true}`, not the upload URL.
-- **OpenAI function calling over single-shot intent classification** (P3). Strict JSON schemas enforced at the API boundary mean the model literally cannot return a malformed tool call. Mixed responses (text preamble + tool call) handled natively. No regex parsing.
-- **Header Auth credential pattern** for ElevenLabs (n8n Cloud has no first-party ElevenLabs cred type). Generic and portable; same pattern works for any API n8n doesn't have a dedicated node for.
-- **"Always Output Data" on empty Supabase queries** (P3). Default n8n behavior halts the workflow when a query returns zero rows — fatal for a first-time-user conversational assistant. Filtering empty placeholder rows downstream is the second half of that fix.
+## Related write-ups
 
----
-
-## Production gotchas I solved (interview ammo)
-
-Each project's README has a "Production gotchas" section. The highlights across all three:
-
-1. **Slack `file_shared` doesn't include mime type** — undocumented; my upfront audio filter was rejecting every event. Fix: filter downstream after `files.info`.
-2. **Slack fires `file_shared` 2-5 times per voice note** — file lifecycle (recording → upload → transcription → channel share) each triggers a separate event. Need idempotency by file_id to avoid duplicate Supabase rows.
-3. **n8n's "S3" node returns only `{success: true}`** — no Bucket/Key for downstream nodes to read. Reconstruct paths deterministically.
-4. **n8n Cloud's Supabase node halts on 0 rows by default** — need to enable "Always Output Data" + handle the resulting `[{}]` placeholder in downstream code.
-5. **OpenAI function calling `arguments` is a JSON-encoded string**, not an object. `JSON.parse()` it. Anthropic returns it pre-parsed.
-6. **ElevenLabs free tier blocked from cloud IP ranges** — abuse detection. Starter $5/mo unlocks. Worth knowing before you start debugging your auth headers for an hour.
-7. **n8n Cloud has no first-party ElevenLabs credential type** — community node. Use generic Header Auth with `xi-api-key`.
-8. **Airtable PAT needs `schema.bases:read` scope** for n8n's table dropdown to populate — easy to miss when granting only `data.records:*`.
-
----
-
-## What this portfolio proves against the JD bullets
-
-| JD requirement | Demonstrated in |
-|---|---|
-| n8n mastery (nodes, expressions, JS) | All 3 projects. Code nodes with non-trivial JS (prompt building, response parsing, deterministic path reconstruction, idempotency). Switch/IF routing. Error trigger sub-workflows. |
-| ElevenLabs expert | Per-persona voice tuning explained with rationale. Header Auth credential pattern. Multiple model selection (`turbo_v2_5`). |
-| LLM orchestration (OpenAI / Claude / local) | OpenAI GPT-4o across all 3 projects with three distinct API features: standard chat (P1), JSON mode (P2), function calling with strict schemas (P3). |
-| Audio engineering (stability, clarity, style) | P1 and P3 use tuned voice_settings, each per use case. P2's whole point is per-persona tuning lookup. |
-| API management (CRMs, DBs, social) | Webhook + Slack OAuth + R2/S3 + Airtable PAT + Supabase service_role + ElevenLabs Header Auth, all wired in n8n. |
-| Monitoring & optimization | Per-execution cost telemetry computed from `usage.prompt_tokens` / `usage.completion_tokens`. Logged to Airtable for pivot analysis. Error trigger → `#automation-alerts` with clickable execution link. |
-| JavaScript/Node.js for custom functions | Heavy use of Code nodes — Build Prompt, Parse + Validate, Build OpenAI Request (with tool definitions), Build Spoken Reply. |
-| JSON, Regex, nested data | Slack event payload parsing, OpenAI tool_call argument JSON.parse, Whisper hallucination regex detection, lead payload normalization. |
-| Vector DBs / LangChain | Mentioned as roadmap extension in P3 README (pgvector for long-term memory). Not in current scope. |
+- [Voice-Driven CRM Assistant](https://www.nassamn.dev/projects/voice-crm-assistant) (folder 03)
+- [Multi-tenant AI automation control plane](https://www.nassamn.dev/projects/multi-tenant-ai-automation-control-plane) and [Voice operations agent](https://www.nassamn.dev/projects/voice-operations-agent) (folder 04)

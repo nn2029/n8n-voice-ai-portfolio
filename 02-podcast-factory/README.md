@@ -1,10 +1,12 @@
 # Project 2 — AI Podcast / Audio Newsletter Factory
 
+> **State:** built as a workflow file and not yet run end to end. What follows describes the design.
+
 > Every morning at 6am, this workflow ranks the day's top AI stories across three feeds, writes a 5-minute two-host podcast script with **GPT-4o in JSON mode**, synthesizes each speaker's lines through ElevenLabs with **per-persona voice tuning**, stitches the segments via byte-level MP3 concatenation, and publishes the episode to S3 + Slack. Fully unattended.
 
-## What it proves
+## What it covers
 
-- **Multi-voice ElevenLabs depth** — two distinct personas (Alex + Jordan), each with deliberately different `stability` / `similarity_boost` / `style` settings tuned to their character. This is the specific kind of "fine-tune ElevenLabs settings" work the JD calls out.
+- **Two voices** — two distinct personas (Alex + Jordan), each with deliberately different `stability` / `similarity_boost` / `style` settings tuned to their character.
 - **Complex content pipeline** — multi-source RSS ingestion, keyword scoring, recency boosting, dedupe.
 - **Binary handling in n8n** — fan-out audio synthesis, ordered re-aggregation, byte-level MP3 stitching in a single Code node via `Buffer.concat` + n8n's first-party binary helpers. Works on n8n Cloud, no `Execute Command` or filesystem needed — output is byte-identical to ffmpeg `-c copy` stream-copy.
 - **JSON-structured LLM output via OpenAI JSON mode** — `response_format: { type: 'json_object' }` guarantees parseable output at the API boundary, eliminating the regex-extraction step required when using free-form generation. Per-turn validation runs before any TTS spend is committed.
